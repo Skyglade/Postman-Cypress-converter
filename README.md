@@ -12,7 +12,7 @@ Tests within a postman folder will be compiled into one test script used for Cyp
 <sub> This script is to convert a Postman collection into Cypress </sub>
 
 To run the script: 
-> node PostmanCypress_script.js ***{Path to Collection}*** ***{Path to Output}***
+> node PostmanCypress_script.js <***Path to Collection***>  <***Path to Output***>
 
 Example:
 >> node PostmanCypress_script.js MyCollection.postman_collection.json cypress/e2e/postman_converted
@@ -21,7 +21,7 @@ Example:
 ## <ins> PostmanCucumber_script.js </ins>
 <sub> This script is to convert a Postman collection into Cucumber compatible format for Cypress </sub>
 
-> node PostmanCucumber_script.js <collection.json> <postman_environment_file> 
+> node PostmanCucumber_script.js <***collection.json***> <***postman_environment_file***> 
 
 Example: 
     > node PostmanCucumber_script.js testData/MyCollection.postman_collection.json testData/test.postman_environment.json
