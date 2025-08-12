@@ -24,7 +24,7 @@ Example:
 > node PostmanCucumber_script.js <***collection.json***> <***postman_environment_file***> 
 
 Example: 
-    > node PostmanCucumber_script.js testData/MyCollection.postman_collection.json testData/test.postman_environment.json
+>> node PostmanCucumber_script.js testData/MyCollection.postman_collection.json testData/test.postman_environment.json
 
 
 ### <ins> Output: </ins>
