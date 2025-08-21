@@ -21,87 +21,17 @@ function safeName(name) {
   return name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
 }
 
-function extractBody(body) {
-  if (!body) return null;
-
-  if (body.mode === 'raw') {
-    let replacedBody = replacePostmanVars(body.raw || '');
-    try {
-      return JSON.stringify(JSON.parse(replacedBody), null, 6);
-    } catch {
-      return `\`${replacedBody}\``;
-    }
-  }
-
-  if (body.mode === 'urlencoded') {
-    const data = {};
-    (body.urlencoded || []).forEach(param => {
-      if (!param.disabled) {
-        data[param.key] = replacePostmanVars(param.value || '');
-      }
-    });
-    return JSON.stringify(data, null, 6);
-  }
-
-  if (body.mode === 'formdata') {
-    const formData = {};
-    (body.formdata || []).forEach(param => {
-      if (!param.disabled) {
-        formData[param.key] = replacePostmanVars(param.value || '');
-      }
-    });
-    return JSON.stringify(formData, null, 6);
-  }
-
-  if (body.mode === 'graphql') {
-    return JSON.stringify({
-      query: replacePostmanVars(body.graphql.query || ''),
-      variables: body.graphql.variables ? JSON.parse(replacePostmanVars(JSON.stringify(body.graphql.variables))) : {}
-    }, null, 6);
-  }
-
-  return null;
-}
-
-function extractAuth(auth) {
-  if (!auth || !auth.type) return {};
-
-  const result = {};
-  switch (auth.type) {
-    case 'bearer':
-      result['Authorization'] = `Bearer ${replacePostmanVars(auth.bearer[0]?.value || '')}`;
-      break;
-    case 'basic':
-      const username = replacePostmanVars(auth.basic.find(a => a.key === 'username')?.value || '');
-      const password = replacePostmanVars(auth.basic.find(a => a.key === 'password')?.value || '');
-      result['Authorization'] = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
-      break;
-    case 'apikey':
-      const apiKey = auth.apikey.find(a => a.key === 'value')?.value || '';
-      const apiKeyName = auth.apikey.find(a => a.key === 'key')?.value || 'X-API-Key';
-      result[apiKeyName] = replacePostmanVars(apiKey);
-      break;
-    // You can extend for other Postman auth types here (digest, oauth1, oauth2)
-  }
-  return result;
-}
-
 function generateTestCode(folderName, requests) {
   let code = `/// <reference types="cypress" />\n\ndescribe('${folderName}', () => {\n`;
 
   requests.forEach(item => {
     const method = item.request.method;
     const url = replacePostmanVars(item.request.url.raw || '');
-    let headers = {};
+    const headers = {};
     (item.request.header || []).forEach(h => {
-      if (!h.disabled) headers[h.key] = replacePostmanVars(h.value);
+      headers[h.key] = replacePostmanVars(h.value);
     });
-
-    // Add auth headers
-    headers = { ...headers, ...extractAuth(item.request.auth) };
-
-    // Add body
-    const body = extractBody(item.request.body);
+    const body = item.request.body?.raw || '';
 
     code += `  it('${safeName(item.name)}', () => {\n`;
     code += `    cy.request({\n`;
@@ -111,7 +41,12 @@ function generateTestCode(folderName, requests) {
       code += `      headers: ${JSON.stringify(headers, null, 6)},\n`;
     }
     if (body) {
-      code += `      body: ${body},\n`;
+      let replacedBody = replacePostmanVars(body);
+      try {
+        code += `      body: ${JSON.stringify(JSON.parse(replacedBody), null, 6)},\n`;
+      } catch {
+        code += `      body: \`${replacedBody}\`,\n`;
+      }
     }
     code += `    }).then((response) => {\n`;
     code += `      expect(response.status).to.eq(200);\n`;

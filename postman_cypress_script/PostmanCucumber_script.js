@@ -3,23 +3,16 @@ const path = require('path');
 
 const OUTPUT_FEATURE_DIR = path.join(__dirname, 'cypress', 'e2e', 'postman');
 const OUTPUT_STEP_FILE = path.join(__dirname, 'cypress', 'e2e', 'commonPostmanSteps.js');
-const BASE_URL_REGEX = /^https?:\/\/[^/]+/i;
+const cypressConfig = path.join(__dirname, 'cypress.env.json');
+//const BASE_URL_REGEX = /^(https?:\/\/[^/]+|{{[^}]+}})/i;
 
 const stepMethods = new Set();
+const stepUsers = new Set();
 const seenScenariosByFile = new Map(); // Per-file dedupe
 
 // -------------------- Utilities --------------------
 function ensureDirSync(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function extractPathOnly(rawUrl) {
-  if (!rawUrl) return '';
-  return rawUrl.replace(BASE_URL_REGEX, '');
-}
-
-function replaceVarsForFeature(str) {
-  return str.replace(/{{(\w+)}}/g, '{{$1}}'); // Keep placeholders in Gherkin
 }
 
 function loadPostmanEnv(envFile) {
@@ -33,44 +26,68 @@ function loadPostmanEnv(envFile) {
   return vars;
 }
 
+function readPostmanEnvs(item) {
+  const envs = JSON.parse(fs.readFileSync(cypressConfig, "utf8"))
+  const userID = (item.bearer[0].value).replace(/{{|}}/g, "")
+  
+  return {"id": userID,
+          "value": envs[userID]}
+}
+
 // -------------------- Step Definition Generator --------------------
 function generateCommonStepFile() {
   let code = `import { When, Then } from '@badeball/cypress-cucumber-preprocessor';\n\n`;
+  
+  stepUsers.forEach(authUsers => {
 
-  stepMethods.forEach(method => {
-    code += `When('I send a ${method} request to {string}', (endpoint) => {\n`;
-    code += `  const resolvedEndpoint = endpoint.replace(/{{(\\w+)}}/g, (_, name) => Cypress.env(name));\n`;
-    code += `  cy.request({\n`;
-    code += `    method: '${method}',\n`;
-    code += `    url: \`\${Cypress.env('baseUrl')}\${resolvedEndpoint}\`,\n`;
-    code += `  }).then((response) => {\n`;
-    code += `    Cypress.env('lastResponse', response);\n`;
+    stepMethods.forEach(method => {
+      code += `When('User {string} send a ${method} request to {string} with:', (user, endpoint, dataTable) => {\n`;
+      code += `  const resolvedEndpoint = endpoint.replace(/{{(\\w+)}}/g, (_, name) => Cypress.env(name));\n`;
+      code += `  const rows = dataTable.raw();\n`;
+      code += `  const headers = {};\n`;
+      code += `  let body = {};\n`;
+      code += `  rows.forEach(([key, value]) => {\n`;
+      code += `    if (key.toLowerCase().startsWith('header:')) {\n`;
+      code += `      headers[key.replace('header:', '')] = value;\n`;
+      code += `    } else if (key.toLowerCase().startsWith('body:')) {\n`;
+      code += `      try { body[key.replace('body:', '')] = JSON.parse(value); } catch { body[key.replace('body:', '')] = value; }\n`;
+      code += `    }\n`;
+      code += `  });\n`;
+      code += `  cy.request({\n`;
+      code += `    method: '${method}',\n`;
+      code += `    url: \`\${Cypress.env('baseUrl')}\${resolvedEndpoint}\`,\n`;
+      code += `    headers,\n`;
+      code += `    auth: \`\${Cypress.env('${authUsers.id}')}\`,\n`,
+      code += `    body: Object.keys(body).length ? body : undefined,\n`;
+      code += `  }).then((response) => {\n`;
+      code += `    Cypress.env('lastResponse', response);\n`;
+      code += `  });\n`;
+      code += `});\n\n`;
+    });
+    
+    code += `Then('the response should match:', (dataTable) => {\n`;
+    code += `  const response = Cypress.env('lastResponse');\n`;
+    code += `  const rows = dataTable.raw();\n`;
+    code += `  rows.forEach(([key, expected]) => {\n`;
+    code += `    if (key.toLowerCase() === 'status') {\n`;
+    code += `      expect(response.status).to.be.oneOf(expected.split(',').map(Number));\n`;
+    code += `    } else {\n`;
+    code += `      const body = response.body;\n`;
+    code += `      const val = key.split('.').reduce((o, k) => (o ? o[k] : undefined), body);\n`;
+    code += `      const parsedExpected = isNaN(expected) ? expected : Number(expected);\n`;
+    code += `      expect(val).to.eql(parsedExpected);\n`;
+    code += `    }\n`;
     code += `  });\n`;
-    code += `});\n\n`;
-  });
-
-  code += `Then('the response should match:', (dataTable) => {\n`;
-  code += `  const response = Cypress.env('lastResponse');\n`;
-  code += `  const rows = dataTable.raw();\n`;
-  code += `  rows.forEach(([key, expected]) => {\n`;
-  code += `    if (key.toLowerCase() === 'status') {\n`;
-  code += `      expect(response.status).to.be.oneOf(expected.split(',').map(Number));\n`;
-  code += `    } else {\n`;
-  code += `      const body = response.body;\n`;
-  code += `      const val = key.split('.').reduce((o, k) => (o ? o[k] : undefined), body);\n`;
-  code += `      const parsedExpected = isNaN(expected) ? expected : Number(expected);\n`;
-  code += `      expect(val).to.eql(parsedExpected);\n`;
-  code += `    }\n`;
-  code += `  });\n`;
-  code += `});\n`;
-
-  ensureDirSync(path.dirname(OUTPUT_STEP_FILE));
-  fs.writeFileSync(OUTPUT_STEP_FILE, code, 'utf8');
-  console.log(`✅ Step definitions written to ${OUTPUT_STEP_FILE}`);
-}
-
+    code += `});\n`;
+  })
+    
+    ensureDirSync(path.dirname(OUTPUT_STEP_FILE));
+    fs.writeFileSync(OUTPUT_STEP_FILE, code, 'utf8');
+    console.log(`✅ Step definitions written to ${OUTPUT_STEP_FILE}`);
+  }
+  
 // -------------------- Feature Writer --------------------
-function addScenarioToFeatureFile(folderPath, method, endpointPath, scenarioName, assertions) {
+function addScenarioToFeatureFile(folderPath, method, endpointPath, scenarioName, headers, auth, body, assertions) {
   const featureDir = path.join(OUTPUT_FEATURE_DIR, folderPath);
   ensureDirSync(featureDir);
 
@@ -80,7 +97,7 @@ function addScenarioToFeatureFile(folderPath, method, endpointPath, scenarioName
     seenScenariosByFile.set(featureFile, new Set());
   }
   const fileSeen = seenScenariosByFile.get(featureFile);
-  const scenarioKey = `${method}:${endpointPath}:${JSON.stringify(assertions)}`;
+  const scenarioKey = `${method}:${endpointPath}:${JSON.stringify(headers)}:${JSON.stringify(body)}:${JSON.stringify(assertions)}`;
   if (fileSeen.has(scenarioKey)) return;
   fileSeen.add(scenarioKey);
 
@@ -92,7 +109,22 @@ function addScenarioToFeatureFile(folderPath, method, endpointPath, scenarioName
   }
 
   content += `  Scenario: ${scenarioName}\n`;
-  content += `    When I send a ${method} request to "${endpointPath}"\n`;
+  content += `    When User "${auth.id}" sends a ${method} request to "${endpointPath}" with:\n`;
+
+  // Headers
+  headers.forEach(h => {
+    content += `      | header:${h.key} | ${h.value} |\n`;
+  });
+
+  // Body
+  if (body && Object.keys(body).length > 0) {
+    Object.entries(body).forEach(([k, v]) => {
+      if (typeof v === 'object') v = JSON.stringify(v);
+      content += `      | body:${k} | ${v} |\n`;
+    });
+  }
+
+  // Assertions
   if (assertions.length > 0) {
     content += `    Then the response should match:\n`;
     assertions.forEach(a => {
@@ -111,41 +143,49 @@ function extractAssertionsFromTests(eventArray) {
 
   eventArray.forEach(ev => {
     if (ev.listen === 'test' && ev.script && ev.script.exec) {
+      const scriptText = ev.script.exec.join("\n");
+
+      //1. handling tests where assertions are made against lists/variables   
+      const loopMatch = scriptText.match(/(\w+)\s*=\s*\[([^\]]+)\][\s\S]+?\1\.forEach/);
+      if (loopMatch) {
+        const varName = loopMatch[1]; // e.g., groupList
+        const rawValues = loopMatch[2].split(',').map(v => v.trim().replace(/['"]/g, ''));
+        rawValues.forEach(val => {
+          assertions.push({
+            key: `GroupName`,
+            value: val
+          });
+        });
+      }
+   
+      // 2. Handle single-line pm.expect assertions 
+
       ev.script.exec.forEach(line => {
-        // pm.response.to.have.status(NUM)
-        let statusHaveMatch = line.match(/pm\.response\.to\.have\.status\((\d+)\)/);
-        if (statusHaveMatch) {
-          assertions.push({ key: 'status', value: statusHaveMatch[1] });
-        }
+        let trimmed = line.trim();
 
-        // Status code exact match
-        let statusMatch = line.match(/response\.code\s*===?\s*(\d+)/);
+        // Status codes
+        let statusMatch = trimmed.match(/response\.to\.have\.status\((\d+)\)/);
         if (statusMatch) {
           assertions.push({ key: 'status', value: statusMatch[1] });
+          return;
         }
 
-        // pm.expect(pm.response.code).to.equal(NUM) or .eql(NUM)
-        statusMatch = line.match(/response\.code\)\.to\.(?:equal|eql)\((\d+)\)/);
-        if (statusMatch) {
-          assertions.push({ key: 'status', value: statusMatch[1] });
-        }
+        // Generic pm.expect(...)
+        let expectMatch = trimmed.match(/pm\.expect\((.+?)\)\.to\.(.+)/);
+        if (expectMatch) {
+          let actualExpr = expectMatch[1].trim();
+          let assertionExpr = expectMatch[2].trim();
 
-        // pm.expect(pm.response.code).to.be.oneOf([200, 201])
-        const statusArrayMatch = line.match(/response\.code\)\.to\.be\.oneOf\(\[([0-9,\s]+)\]\)/);
-        if (statusArrayMatch) {
-          const codes = statusArrayMatch[1].split(',').map(c => c.trim());
-          assertions.push({ key: 'status', value: codes.join(',') });
-        }
-
-        // pm.expect(pm.response.json().foo.bar).to.equal(...)
-        const deepJsonMatch = line.match(/response\.json\(\)(?:\.(\w+))+(.*?)to\.(?:equal|eql)\((.+?)\)/);
-        if (deepJsonMatch) {
-          const pathMatch = line.match(/response\.json\(\)\.([\w.]+)/);
-          if (pathMatch) {
-            assertions.push({
-              key: pathMatch[1],
-              value: deepJsonMatch[3].replace(/['"]/g, '').trim()
-            });
+          if (actualExpr.includes('response.json()')) {
+            let pathMatch = actualExpr.match(/response\.json\(\)\.([\w.]+)/);
+            let key = pathMatch ? pathMatch[1] : 'body';
+            let valueMatch = assertionExpr.match(/(?:equal|eql|contain|include)\((.+?)\)/);
+            if (valueMatch) {
+              assertions.push({
+                key,
+                value: valueMatch[1].replace(/['"]/g, '').trim()
+              });
+            }
           }
         }
       });
@@ -163,10 +203,50 @@ function processItems(items, currentFolder = '') {
       processItems(item.item, newFolder);
     } else if (item.request) {
       const method = item.request.method.toUpperCase();
+      const auth = item.request.auth
       stepMethods.add(method);
-
+      
       const rawUrl = item.request.url?.raw || '';
-      const endpointPath = replaceVarsForFeature(extractPathOnly(rawUrl));
+     // const endpointPath = replaceVarsForFeature(extractPathOnly(item.request.url.path));
+      const endpointPath = (item.request.url.path).join("/")
+
+      const headers = (item.request.header || []).map(h => ({ key: h.key, value: h.value }));
+
+      //authentication\
+      let requestAuthentication = {}
+      if(item.request.auth) { 
+        requestAuthentication = readPostmanEnvs(item.request.auth)
+        stepUsers.add(requestAuthentication)
+     }
+
+      // Body
+      let body = {};
+      if (item.request.body) {
+        const mode = item.request.body.mode;
+        if (mode === 'urlencoded') {
+          (item.request.body.urlencoded || []).forEach(p => {
+            if (p.disabled !== true) body[p.key] = p.value;
+          });
+        } else if (mode === 'formdata') {
+          (item.request.body.formdata || []).forEach(p => {
+            if (p.disabled !== true) body[p.key] = p.value;
+          });
+        } else if (mode === 'graphql') {
+          body = {
+            query: item.request.body.graphql.query,
+            variables: JSON.stringify(item.request.body.graphql.variables || {})
+          };
+        } else if (mode === 'file') {
+          body = { file: item.request.body.file?.src || '<file upload>' };
+        }
+        else { //(mode === 'raw') {
+          try {
+            body = JSON.parse(item.request.body.raw);
+          } catch {
+            body = { raw: item.request.body.raw };
+          }
+        }
+      }
 
       const assertions = extractAssertionsFromTests(item.event);
 
@@ -175,6 +255,9 @@ function processItems(items, currentFolder = '') {
         method,
         endpointPath,
         item.name,
+        headers,
+        requestAuthentication,
+        body,
         assertions
       );
     }
@@ -191,7 +274,7 @@ function convertPostmanCollection(collectionFile, envFile) {
 
   if (envFile) {
     const envVars = loadPostmanEnv(envFile);
-    fs.writeFileSync(path.join(__dirname, 'Postman.env.js'), JSON.stringify(envVars, null, 2));
+    fs.writeFileSync(path.join(__dirname, 'cypress.env.json'), JSON.stringify(envVars, null, 2));
     console.log(`✅ Environment variables written to cypress.env.json`);
   }
 

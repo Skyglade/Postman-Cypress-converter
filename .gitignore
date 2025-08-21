@@ -1,1 +1,7 @@
 *.json
+testData/*
+*.feature
+commonPostmanSteps.js
+node_modules/*
+cypress/*
+cypress.config.js
