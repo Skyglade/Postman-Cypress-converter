@@ -136,7 +136,6 @@ function addScenarioToFeatureFile(folderPath, method, endpointPath, scenarioName
   fs.writeFileSync(featureFile, content, 'utf8');
 }
 
-// -------------------- Postman Test Parser --------------------
 function extractAssertionsFromTests(eventArray) {
   if (!Array.isArray(eventArray)) return [];
   const assertions = [];
@@ -145,55 +144,57 @@ function extractAssertionsFromTests(eventArray) {
     if (ev.listen === 'test' && ev.script && ev.script.exec) {
       const scriptText = ev.script.exec.join("\n");
 
-      //1. handling tests where assertions are made against lists/variables   
-      const loopMatch = scriptText.match(/(\w+)\s*=\s*\[([^\]]+)\][\s\S]+?\1\.forEach/);
-      if (loopMatch) {
-        const varName = loopMatch[1]; // e.g., groupList
-        const rawValues = loopMatch[2].split(',').map(v => v.trim().replace(/['"]/g, ''));
+      // 🔹 1. Match response status codes
+      const statusMatches = scriptText.matchAll(/response\.to\.have\.status\((\d+)\)/g);
+      for (const m of statusMatches) {
+        assertions.push({ key: 'status', value: m[1] });
+      }
+
+      // 🔹 2. Match pm.expect(...).to.be.oneOf([...])
+      const oneOfMatches = scriptText.matchAll(/pm\.expect\((.+?)\)\.to\.be\.oneOf\(\[([^\]]+)\]\)/g);
+      for (const m of oneOfMatches) {
+        let actualExpr = m[1].trim();
+        let options = m[2].split(",").map(v => v.trim().replace(/['"`]/g, ''));
+        let key = "body";
+        const jsonPath = actualExpr.match(/response\.(?:json\(\)|code)(?:\.([\w.]+))?/);
+        if (jsonPath) key = jsonPath[1] || (actualExpr.includes("code") ? "status" : "body");
+        assertions.push({ key, value: options.join(","), assertion: "oneOf" });
+      }
+
+      // 🔹 3. Generic pm.expect(...).to.<assertion>(...)
+      const expectMatches = scriptText.matchAll(/pm\.expect\((.+?)\)\.to\.(\w+)\((.+?)\)/g);
+      for (const m of expectMatches) {
+        let actualExpr = m[1].trim();
+        let assertionType = m[2];
+        let expectedRaw = m[3].trim().replace(/['"`]/g, '');
+
+        let key = "body";
+        if (/response\.json\(\)/.test(actualExpr)) {
+          const pathMatch = actualExpr.match(/response\.json\(\)(?:\.([\w.]+))?/);
+          key = pathMatch ? pathMatch[1] : "body";
+        } else if (/response\.code/.test(actualExpr)) {
+          key = "status";
+        } else if (/response\.text\(\)/.test(actualExpr)) {
+          key = "text";
+        }
+
+        assertions.push({ key, value: expectedRaw, assertion: assertionType });
+      }
+
+      // 🔹 4. Handle simple array forEach-style checks (group assertions)
+      const groupLoopMatches = scriptText.matchAll(/(\w+)\s*=\s*\[([^\]]+)\][\s\S]+?\1\.forEach/g);
+      for (const m of groupLoopMatches) {
+        const rawValues = m[2].split(",").map(v => v.trim().replace(/['"`]/g, ''));
         rawValues.forEach(val => {
-          assertions.push({
-            key: `GroupName`,
-            value: val
-          });
+          assertions.push({ key: "GroupName", value: val, assertion: "exists" });
         });
       }
-   
-      // 2. Handle single-line pm.expect assertions 
-
-      ev.script.exec.forEach(line => {
-        let trimmed = line.trim();
-
-        // Status codes
-        let statusMatch = trimmed.match(/response\.to\.have\.status\((\d+)\)/);
-        if (statusMatch) {
-          assertions.push({ key: 'status', value: statusMatch[1] });
-          return;
-        }
-
-        // Generic pm.expect(...)
-        let expectMatch = trimmed.match(/pm\.expect\((.+?)\)\.to\.(.+)/);
-        if (expectMatch) {
-          let actualExpr = expectMatch[1].trim();
-          let assertionExpr = expectMatch[2].trim();
-
-          if (actualExpr.includes('response.json()')) {
-            let pathMatch = actualExpr.match(/response\.json\(\)\.([\w.]+)/);
-            let key = pathMatch ? pathMatch[1] : 'body';
-            let valueMatch = assertionExpr.match(/(?:equal|eql|contain|include)\((.+?)\)/);
-            if (valueMatch) {
-              assertions.push({
-                key,
-                value: valueMatch[1].replace(/['"]/g, '').trim()
-              });
-            }
-          }
-        }
-      });
     }
   });
 
   return assertions;
 }
+
 
 // -------------------- Recursive Processor --------------------
 function processItems(items, currentFolder = '') {
